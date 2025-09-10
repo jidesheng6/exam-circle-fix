@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>考评系统圆圈修复工具</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 95vw;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        .upload-section {
+            border: 3px dashed #ddd;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 30px;
+            transition: all 0.3s ease;
+        }
+        
+        .upload-section:hover {
+            border-color: #4CAF50;
+            background: #f9f9f9;
+        }
+        
+        .upload-section.dragover {
+            border-color: #4CAF50;
+            background: #e8f5e8;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .upload-btn {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+        }
+        
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+        }
+        
+        .controls {
+            display: none;
+            margin: 20px 0;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 10px;
+        }
+        
+        .control-group {
+            margin: 15px 0;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        /* 参数按钮样式 - 贴边隐藏设计 */
+        .parameter-toggle {
+            position: fixed;
+            top: 50%;
+            right: -35px;
+            transform: translateY(-50%);
+            z-index: 1000;
+            transition: right 0.3s ease;
+        }
+        
+        .parameter-toggle:hover {
+            right: 0;
+        }
+        
+        .parameter-btn {
+            background: linear-gradient(45deg, #FF6B6B, #FF8E53);
+            color: white;
+            border: none;
+            padding: 15px 10px 15px 20px;
+            border-radius: 25px 0 0 25px;
+            font-size: 16px;
+            cursor: pointer;
+            box-shadow: -5px 0 15px rgba(255, 107, 107, 0.3);
+            transition: all 0.3s ease;
+            white-space: nowrap;
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            min-height: 120px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .parameter-btn:hover {
+            box-shadow: -8px 0 20px rgba(255, 107, 107, 0.4);
+        }
+        
+        /* 抽屉菜单样式 */
+        .parameter-drawer {
+            position: fixed;
+            top: 0;
+            right: -320px;
+            width: 300px;
+            height: 100vh;
+            background: white;
+            box-shadow: -5px 0 15px rgba(0,0,0,0.2);
+            transition: right 0.3s ease;
+            z-index: 1001;
+            overflow-y: auto;
+        }
+        
+        .parameter-drawer.open {
+            right: 0;
+        }
+        
+        .drawer-header {
+            background: linear-gradient(45deg, #FF6B6B, #FF8E53);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .drawer-header h3 {
+            margin: 0;
+            font-size: 1.5em;
+        }
+        
+        .close-drawer {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 50%;
+            width: 35px;
+            height: 35px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.3s ease;
+        }
+        
+        .close-drawer:hover {
+            background: rgba(255,255,255,0.2);
+        }
+        
+        .drawer-content {
+            padding: 30px 20px;
+        }
+        
+        .drawer-content .control-group {
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .drawer-content .control-group:last-child {
+            border-bottom: none;
+        }
+        
+        .input-wrapper {
+            display: flex;
+            align-items: center;
+            margin-top: 10px;
+        }
+        
+        .input-wrapper input {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        
+        .input-wrapper input:focus {
+            outline: none;
+            border-color: #FF6B6B;
+        }
+        
+        .input-wrapper .unit {
+            margin-left: 10px;
+            font-weight: bold;
+            color: #666;
+        }
+        
+        .help-text {
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+            line-height: 1.4;
+        }
+        
+        .control-group input[type="range"] {
+            width: 100%;
+            margin: 10px 0;
+        }
+        
+        .control-group input[type="number"] {
+            width: 80px;
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        
+        .canvas-container {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+            overflow-x: auto;
+        }
+        
+        .canvas-wrapper {
+            display: inline-block;
+            margin: 10px;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            max-width: 45vw;
+        }
+        
+        .canvas-title {
+            background: #333;
+            color: white;
+            padding: 10px;
+            margin: 0;
+            font-size: 14px;
+        }
+        
+        canvas {
+            display: block;
+            max-width: 80vw;
+            max-height: 70vh;
+            height: auto;
+            width: auto;
+        }
+        
+        /* 新的主图片显示区域样式 */
+        .image-display-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 12px;
+            border: 2px dashed #007bff;
+            transition: margin-right 0.3s ease;
+        }
+        
+        /* 当抽屉打开时，为图片显示区域留出空间 */
+        body.drawer-open .image-display-section {
+            margin-right: 320px;
+        }
+        
+        body.drawer-open .main-canvas-wrapper {
+            margin-right: 320px;
+        }
+        
+        body.drawer-open .action-buttons {
+            margin-right: 320px;
+        }
+        
+        .image-display-section h3 {
+            color: #007bff;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .main-canvas-wrapper {
+            text-align: center;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: auto;
+            max-height: 90vh;
+        }
+        
+        #mainCanvas {
+            border: 2px solid #007bff;
+            border-radius: 8px;
+            cursor: crosshair;
+            max-width: 95vw;
+            max-height: 85vh;
+            width: auto;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+            transform-origin: top left;
+            transition: transform 0.2s ease;
+        }
+        
+        /* 缩放控制样式 */
+        .zoom-controls {
+            text-align: center;
+            margin: 15px 0;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .zoom-controls label {
+            font-weight: bold;
+            color: #495057;
+            margin-right: 10px;
+        }
+        
+        .zoom-slider {
+            width: 200px;
+            margin: 0 10px;
+        }
+        
+        .zoom-value {
+            font-weight: bold;
+            color: #007bff;
+            margin-left: 10px;
+        }
+        
+        .zoom-buttons {
+            margin-top: 10px;
+        }
+        
+        .zoom-btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            margin: 0 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        .zoom-btn:hover {
+            background: #0056b3;
+        }
+        
+        .action-buttons {
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        .btn {
+            background: linear-gradient(45deg, #2196F3, #1976D2);
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            margin: 0 10px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(33, 150, 243, 0.3);
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(33, 150, 243, 0.4);
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .btn.success {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+        }
+        
+        .btn.success:hover {
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+        }
+        
+        .status {
+            text-align: center;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 10px;
+            font-weight: bold;
+        }
+        
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+        }
+        
+        .status.success {
+            background: #e8f5e9;
+            color: #388e3c;
+            border: 1px solid #c8e6c9;
+        }
+        
+        .status.error {
+            background: #ffebee;
+            color: #d32f2f;
+            border: 1px solid #ffcdd2;
+        }
+        
+        .instructions {
+            background: #fff3e0;
+            border: 1px solid #ffcc02;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        
+        .instructions h3 {
+            color: #f57c00;
+            margin-top: 0;
+        }
+        
+        .instructions ol {
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #4CAF50;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .canvas-wrapper {
+                max-width: 90vw;
+                display: block;
+                margin: 20px auto;
+            }
+            
+            canvas {
+                max-width: 85vw;
+                max-height: 60vh;
+            }
+            
+            .container {
+                max-width: 98vw;
+                margin: 10px auto;
+            }
+            
+            .content {
+                padding: 15px;
+            }
+        }
+        
+        @media (min-width: 1920px) {
+            canvas {
+                max-width: 70vw;
+                max-height: 75vh;
+            }
+            
+            .canvas-wrapper {
+                max-width: 40vw;
+            }
+        }
+        
+        /* 模态框样式 */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            max-width: 98vw;
+            max-height: 95vh;
+            width: 95vw;
+            overflow: hidden;
+            animation: slideIn 0.3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        @keyframes slideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        
+        .modal-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-header h2 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 28px;
+            cursor: pointer;
+            padding: 0;
+            width: 35px;
+            height: 35px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.3s ease;
+        }
+        
+        .modal-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .modal-body {
+            padding: 25px;
+            flex: 1;
+            overflow: auto;
+            text-align: center;
+        }
+        
+        .result-image-container {
+            margin-bottom: 20px;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            border: 2px solid #28a745;
+            max-height: 70vh;
+            overflow: auto;
+        }
+        
+        #modalResultCanvas {
+            border: 2px solid #28a745;
+            border-radius: 8px;
+            display: block;
+            margin: 0 auto;
+        }
+        
+        .result-info {
+            background: #e8f5e8;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #28a745;
+            margin-bottom: 20px;
+        }
+        
+        .result-info p {
+            margin: 0;
+            font-size: 16px;
+            color: #155724;
+            font-weight: 500;
+        }
+        
+        .result-info span {
+            font-weight: bold;
+            color: #28a745;
+        }
+        
+        .modal-footer {
+            background: #f8f9fa;
+            padding: 20px 25px;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            border-top: 1px solid #dee2e6;
+        }
+        
+        .modal-footer .btn {
+            min-width: 140px;
+            padding: 12px 20px;
+            font-size: 16px;
+            font-weight: 500;
+        }
+        
+        /* 响应式模态框 */
+        @media (max-width: 768px) {
+            .modal-content {
+                max-width: 95vw;
+                max-height: 95vh;
+                margin: 10px;
+            }
+            
+            .modal-header {
+                padding: 15px 20px;
+            }
+            
+            .modal-header h2 {
+                font-size: 20px;
+            }
+            
+            .modal-body {
+                padding: 20px;
+            }
+            
+            .modal-footer {
+                padding: 15px 20px;
+                flex-direction: column;
+            }
+            
+            .modal-footer .btn {
+                width: 100%;
+                margin-bottom: 10px;
+            }
+            
+            #modalResultCanvas {
+                max-height: 50vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 考评系统圆圈修复工具</h1>
+            <p>智能检测并修复图像中被涂改的圆圈</p>
+        </div>
+        
+        <div class="content">
+            <!-- 使用说明 -->
+            <div class="instructions" style="margin-bottom: 15px; padding: 12px;">
+                <h3 style="margin-bottom: 10px;">📌 使用说明</h3>
+                <p style="margin-bottom: 8px;">上传图片 → 框选干净圆圈 → 开始修复</p>
+                
+                <!-- 按钮功能说明 -->
+                <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 8px; margin: 8px 0; font-size: 13px;">
+                    <strong>🔧 按钮说明：</strong>
+                    <span style="color: #6c757d;">开始查找-自动检测圆圈 | 手动选择-手动标记圆圈 | 定位编辑-移除误检框 | 开始修复-执行修复</span>
+                </div>
+                
+                <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 8px; margin-top: 8px; font-size: 13px;">
+                    <strong>⚠️ 重要提示：</strong>
+                    <span style="color: #856404;">请使用涂改较少的图片，大面积涂改可能影响修复效果</span>
+                </div>
+            </div>
+            
+            <div class="upload-section" id="uploadSection">
+                <h3>📁 选择或拖拽图片文件</h3>
+                <p>支持 JPG、PNG、BMP 格式</p>
+                <input type="file" id="fileInput" class="file-input" accept="image/*">
+                <button class="upload-btn" onclick="document.getElementById('fileInput').click()">选择图片</button>
+            </div>
+            
+            <!-- 图片显示区域 -->
+            <div class="image-display-section" id="imageDisplaySection" style="display: none;">
+                <h3>📷 已选择的图片 - 点击拖拽选择模板圆圈</h3>
+                
+                <!-- 缩放和旋转控制 -->
+                <div class="zoom-controls" id="zoomControls">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                        <!-- 缩放控制 -->
+                        <div style="flex: 1; min-width: 300px;">
+                            <label for="zoomSlider">🔍 图片缩放:</label>
+                            <input type="range" id="zoomSlider" class="zoom-slider" min="0.5" max="3" step="0.1" value="1.5">
+                            <span class="zoom-value" id="zoomValue">100%</span>
+                            <div class="zoom-buttons">
+                                <button class="zoom-btn" onclick="setZoom(0.5)">50%</button>
+                                <button class="zoom-btn" onclick="setZoom(1)">100%</button>
+                                <button class="zoom-btn" onclick="setZoom(1.5)">150%</button>
+                                <button class="zoom-btn" onclick="setZoom(2)">200%</button>
+                                <button class="zoom-btn" onclick="fitToScreen()">适应屏幕</button>
+                            </div>
+                        </div>
+                        
+                        <!-- 旋转控制 -->
+                        <div class="rotation-controls-inline" id="rotationControlsInline" style="display: none; flex: 1; min-width: 300px; text-align: center;">
+                            <label style="font-weight: bold; color: #495057; margin-right: 10px;">🔄 图片旋转:</label>
+                            <button class="btn" id="autoRotateBtn" onclick="autoRotateImage()" disabled style="background: linear-gradient(45deg, #28a745, #20c997); margin: 0 5px;">自动转正</button>
+                            <button class="btn" id="rotateLeftBtn" onclick="rotateImage(-90)" disabled style="margin: 0 5px;">↺ 左转90°</button>
+                            <button class="btn" id="rotateRightBtn" onclick="rotateImage(90)" disabled style="margin: 0 5px;">↻ 右转90°</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 操作按钮区域 -->
+                <div class="action-buttons" style="margin: 20px 0; text-align: center;">
+                    <button class="btn" id="previewDetectionBtn" onclick="previewDetection()" disabled>开始查找</button>
+                    <button class="btn" id="editModeBtn" onclick="toggleEditMode()" disabled>手动选择</button>
+                    <button class="btn" id="positionEditBtn" onclick="togglePositionEditMode()" disabled>定位编辑</button>
+                    <button class="btn" id="repairBtn" onclick="startRepair()" disabled>开始修复</button>
+                    <button class="btn" id="clearSelectionBtn" onclick="clearSelection()" disabled>清除选择</button>
+                    <button class="btn" onclick="resetAndSelectFile()">重新选择图片</button>
+                </div>
+                
+                <!-- 修复进度条 -->
+                <div class="progress-container" id="progressContainer" style="display: none; margin: 20px 0; padding: 15px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <span style="font-weight: bold; color: #495057;">🔧 修复进度</span>
+                        <span id="progressText" style="color: #6c757d;">准备中...</span>
+                    </div>
+                    <div class="progress-bar-container" style="width: 100%; height: 20px; background-color: #e9ecef; border-radius: 10px; overflow: hidden;">
+                        <div id="progressBar" style="height: 100%; background: linear-gradient(90deg, #28a745, #20c997); width: 0%; transition: width 0.3s ease; border-radius: 10px;"></div>
+                    </div>
+                </div>
+                
+                <div class="main-canvas-wrapper">
+                    <canvas id="mainCanvas"></canvas>
+                </div>
+                
+
+                
+                <!-- 修复结果显示区域 -->
+                <div class="result-display" id="resultDisplay" style="display: none; margin-top: 30px; text-align: center;">
+                    <h3>✨ 修复结果</h3>
+                    <div style="background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <canvas id="resultCanvas" style="border: 2px solid #28a745; border-radius: 8px;"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>正在加载 OpenCV.js...</p>
+            </div>
+            
+
+            
+            <!-- 参数控制抽屉按钮 -->
+            <div class="parameter-toggle">
+                <button id="parameterToggle" class="parameter-btn">⚙️ 参数设置</button>
+            </div>
+            
+            <div class="status" id="status" style="display: none;"></div>
+            
+            <!-- 修复结果模态框 -->
+            <div class="modal" id="resultModal" style="display: none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>✨ 修复完成</h2>
+                        <button class="modal-close" id="modalClose">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="result-zoom-controls" style="margin-bottom: 15px; text-align: center;">
+                            <button class="btn" onclick="setResultZoom(0.5)" style="margin: 0 5px; padding: 8px 12px; font-size: 14px;">50%</button>
+                            <button class="btn" onclick="setResultZoom(1.0)" style="margin: 0 5px; padding: 8px 12px; font-size: 14px;">100%</button>
+                            <button class="btn" onclick="setResultZoom(1.5)" style="margin: 0 5px; padding: 8px 12px; font-size: 14px; background: #2196F3; color: white;">150%</button>
+                            <button class="btn" onclick="setResultZoom(2.0)" style="margin: 0 5px; padding: 8px 12px; font-size: 14px;">200%</button>
+                            <span style="margin-left: 15px; color: #666;">当前缩放: <span id="resultZoomDisplay">150%</span></span>
+                        </div>
+                        <div class="result-image-container" style="max-height: 500px; overflow: auto; border: 1px solid #ddd; border-radius: 4px;">
+                            <canvas id="modalResultCanvas" style="transform-origin: top left; transform: scale(1.5);"></canvas>
+                        </div>
+                        <div class="result-info" id="resultInfo">
+                            <p>修复完成！共修复了 <span id="repairCount">0</span> 个被涂改的圆圈。</p>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn success" id="modalDownloadBtn" onclick="downloadResult()">📥 下载修复图片</button>
+                        <button class="btn" id="modalCloseBtn">关闭</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 隐藏原来的重复canvas区域 -->
+            <div class="canvas-container" id="canvasContainer" style="display: none;">
+                <div class="canvas-wrapper">
+                    <h4 class="canvas-title">原图 - 点击拖拽选择模板</h4>
+                    <canvas id="originalCanvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 右侧参数抽屉菜单 -->
+    <div class="parameter-drawer" id="parameterDrawer">
+        <div class="drawer-header">
+            <h3>⚙️ 参数设置</h3>
+            <button class="close-drawer" id="closeDrawer">×</button>
+        </div>
+        <div class="drawer-content">
+            <div class="control-group">
+                <label for="thresholdValue">模板匹配阈值</label>
+                <div class="input-wrapper">
+                    <input type="number" id="thresholdValue" min="20" max="99" step="1" value="60">
+                    <span class="unit">%</span>
+                </div>
+                <div class="help-text">建议范围: 40%-95%，可输入20%-99%</div>
+            </div>
+            <div class="control-group">
+                <label for="darkRatioValue">参数设置 - 深色像素比例阈值</label>
+                <div class="input-wrapper">
+                    <input type="number" id="darkRatioValue" min="0.1" max="20" step="0.1" value="2">
+                    <span class="unit">%</span>
+                </div>
+                <div class="help-text">用于判断圆圈是否被涂改的敏感度参数。数值越小越敏感，会检测到更轻微的涂改；数值越大越宽松，只检测明显的涂改。建议范围: 1%-10%</div>
+            </div>
+
+        </div>
+    </div>
+    
+    <script>
+        // 定义Module对象，这是OpenCV.js (Emscripten)需要的
+        var Module = {
+            onRuntimeInitialized() {
+                console.log('OpenCV.js runtime initialized');
+                console.log('cv object:', typeof cv, cv);
+                console.log('window.cv object:', typeof window.cv, window.cv);
+                
+                // 尝试从不同位置获取cv对象
+                let cvObj = null;
+                if (typeof cv !== 'undefined' && cv && cv.getBuildInformation) {
+                    cvObj = cv;
+                } else if (typeof window.cv !== 'undefined' && window.cv && window.cv.getBuildInformation) {
+                    cvObj = window.cv;
+                }
+                
+                if (cvObj) {
+                    // 确保cv对象在全局作用域中可用
+                    window.cv = cvObj;
+                    
+                    // 直接在这里处理OpenCV.js初始化完成的逻辑
+                    document.getElementById('status').innerHTML = 'OpenCV.js is ready.';
+                    document.getElementById('loading').style.display = 'none';
+                    showStatus('OpenCV.js 加载完成！', 'success');
+                    console.log('OpenCV.js 版本:', cvObj.getBuildInformation());
+                    
+                    // 调用circle-repair.js中的初始化函数
+                    if (typeof onOpenCvReady === 'function') {
+                        onOpenCvReady();
+                    }
+                } else {
+                    console.error('cv object is not available');
+                    document.getElementById('loading').style.display = 'none';
+                    showStatus('OpenCV.js 加载失败！', 'error');
+                }
+            }
+        };
+        
+        // 抽屉菜单控制
+        document.addEventListener('DOMContentLoaded', function() {
+            // 参数抽屉菜单功能
+            const parameterToggle = document.getElementById('parameterToggle');
+            const parameterDrawer = document.getElementById('parameterDrawer');
+            const closeDrawer = document.getElementById('closeDrawer');
+            
+            parameterToggle.addEventListener('click', function() {
+                parameterDrawer.classList.add('open');
+                document.body.classList.add('drawer-open');
+            });
+            
+            function closeParameterDrawer() {
+                parameterDrawer.classList.remove('open');
+                document.body.classList.remove('drawer-open');
+            }
+            
+            closeDrawer.addEventListener('click', closeParameterDrawer);
+            
+            // 点击抽屉外部关闭
+            parameterDrawer.addEventListener('click', function(e) {
+                if (e.target === parameterDrawer) {
+                    closeParameterDrawer();
+                }
+            });
+            
+            // 模态框功能
+            const resultModal = document.getElementById('resultModal');
+            const modalClose = document.getElementById('modalClose');
+            const modalCloseBtn = document.getElementById('modalCloseBtn');
+            
+            // 关闭模态框函数
+            function closeModal() {
+                resultModal.style.display = 'none';
+            }
+            
+            // 点击关闭按钮关闭模态框
+            modalClose.addEventListener('click', closeModal);
+            modalCloseBtn.addEventListener('click', closeModal);
+            
+            // 点击模态框背景关闭
+            resultModal.addEventListener('click', function(e) {
+                if (e.target === resultModal) {
+                    closeModal();
+                }
+            });
+            
+            // ESC键关闭模态框
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && resultModal.style.display === 'flex') {
+                    closeModal();
+                }
+            });
+        });
+        
+        // 状态显示函数
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            if (statusDiv) {
+                statusDiv.textContent = message;
+                statusDiv.className = 'status ' + (type || 'info');
+            }
+        }
+    </script>
+    <script async src="js/opencv.js" onerror="onOpenCvError()"></script>
+    <script src="js/circle-repair.js"></script>
+</body>
+</html>

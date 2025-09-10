@@ -1,0 +1,35 @@
+<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景 -->
+  <rect width="400" height="300" fill="#f0f0f0"/>
+  
+  <!-- 标题 -->
+  <text x="200" y="30" text-anchor="middle" font-family="Arial" font-size="16" fill="#333">圆圈修复测试图片</text>
+  
+  <!-- 干净的圆圈 -->
+  <circle cx="80" cy="80" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  <circle cx="200" cy="80" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  <circle cx="320" cy="80" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  
+  <!-- 被涂改的圆圈（用黑色填充模拟涂改） -->
+  <circle cx="80" cy="150" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  <rect x="70" y="140" width="20" height="20" fill="#000"/>
+  
+  <circle cx="200" cy="150" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  <path d="M 185 135 L 215 165 M 215 135 L 185 165" stroke="#000" stroke-width="3"/>
+  
+  <circle cx="320" cy="150" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  <circle cx="320" cy="150" r="15" fill="#000"/>
+  
+  <!-- 更多干净的圆圈 -->
+  <circle cx="80" cy="220" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  <circle cx="200" cy="220" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  
+  <!-- 更多被涂改的圆圈 -->
+  <circle cx="320" cy="220" r="25" fill="none" stroke="#000" stroke-width="2"/>
+  <polygon points="310,210 330,210 320,230" fill="#000"/>
+  
+  <!-- 说明文字 -->
+  <text x="80" y="270" text-anchor="middle" font-family="Arial" font-size="12" fill="#666">干净圆圈</text>
+  <text x="200" y="270" text-anchor="middle" font-family="Arial" font-size="12" fill="#666">被涂改圆圈</text>
+  <text x="320" y="270" text-anchor="middle" font-family="Arial" font-size="12" fill="#666">需要修复</text>
+</svg>
