@@ -22,6 +22,17 @@ let hasPreviewedDetection = false; // 是否已进行过预览检测
 let isManualSelecting = false; // 是否正在进行手动选择
 let manualStartX = 0, manualStartY = 0; // 手动选择起始坐标
 let detectionResults = []; // 存储预览检测的结果
+let isRegionSelecting = false; // 是否正在进行区域选择
+let regionStartX = 0, regionStartY = 0; // 区域选择起始坐标
+let selectedRegions = []; // 选中的检测区域数组 [{x, y, width, height}]
+
+// 新增：可调整框相关变量
+let selectedBox = null; // 当前选中的框 {type: 'template'|'detection'|'manual', index: number, rect: {x, y, width, height}}
+let isResizing = false; // 是否正在调整大小
+let isDragging = false; // 是否正在拖拽移动
+let resizeHandle = null; // 当前调整手柄 'nw'|'ne'|'sw'|'se'|'n'|'s'|'e'|'w'
+let dragStartX = 0, dragStartY = 0; // 拖拽起始坐标
+let originalBoxRect = null; // 拖拽/调整开始时的原始框位置
 
 // OpenCV.js加载完成回调
 function onOpenCvReady() {
@@ -83,7 +94,256 @@ function getDarkRatioValue() {
     return percentValue / 100; // 转换为0-1之间的小数
 }
 
+// 非极大值抑制函数，用于去除重复检测
+function applyNonMaxSuppression(locations, templateSize) {
+    if (locations.length === 0) return [];
+    
+    // 按置信度降序排序
+    locations.sort((a, b) => b.confidence - a.confidence);
+    
+    const suppressed = [];
+    const minDistance = templateSize * 0.5; // 最小距离阈值
+    
+    for (let i = 0; i < locations.length; i++) {
+        const current = locations[i];
+        let shouldSuppress = false;
+        
+        // 检查是否与已选择的位置过于接近
+        for (let j = 0; j < suppressed.length; j++) {
+            const selected = suppressed[j];
+            const distance = Math.sqrt(
+                Math.pow(current.x - selected.x, 2) + 
+                Math.pow(current.y - selected.y, 2)
+            );
+            
+            if (distance < minDistance) {
+                shouldSuppress = true;
+                break;
+            }
+        }
+        
+        if (!shouldSuppress) {
+            suppressed.push(current);
+        }
+    }
+    
+    console.log(`非极大值抑制: ${locations.length} -> ${suppressed.length} 个检测结果`);
+    return suppressed;
+}
 
+// 新增：检测鼠标位置相关的辅助函数
+function getResizeHandle(mouseX, mouseY, rect) {
+    const handleSize = 8; // 调整手柄的大小
+    const x = rect.x;
+    const y = rect.y;
+    const w = rect.width;
+    const h = rect.height;
+    
+    // 检测角落手柄
+    if (mouseX >= x - handleSize && mouseX <= x + handleSize && 
+        mouseY >= y - handleSize && mouseY <= y + handleSize) {
+        return 'nw'; // 西北角
+    }
+    if (mouseX >= x + w - handleSize && mouseX <= x + w + handleSize && 
+        mouseY >= y - handleSize && mouseY <= y + handleSize) {
+        return 'ne'; // 东北角
+    }
+    if (mouseX >= x - handleSize && mouseX <= x + handleSize && 
+        mouseY >= y + h - handleSize && mouseY <= y + h + handleSize) {
+        return 'sw'; // 西南角
+    }
+    if (mouseX >= x + w - handleSize && mouseX <= x + w + handleSize && 
+        mouseY >= y + h - handleSize && mouseY <= y + h + handleSize) {
+        return 'se'; // 东南角
+    }
+    
+    // 检测边缘手柄
+    if (mouseX >= x + handleSize && mouseX <= x + w - handleSize && 
+        mouseY >= y - handleSize && mouseY <= y + handleSize) {
+        return 'n'; // 北边
+    }
+    if (mouseX >= x + handleSize && mouseX <= x + w - handleSize && 
+        mouseY >= y + h - handleSize && mouseY <= y + h + handleSize) {
+        return 's'; // 南边
+    }
+    if (mouseX >= x - handleSize && mouseX <= x + handleSize && 
+        mouseY >= y + handleSize && mouseY <= y + h - handleSize) {
+        return 'w'; // 西边
+    }
+    if (mouseX >= x + w - handleSize && mouseX <= x + w + handleSize && 
+        mouseY >= y + handleSize && mouseY <= y + h - handleSize) {
+        return 'e'; // 东边
+    }
+    
+    return null;
+}
+
+function isInsideRect(mouseX, mouseY, rect) {
+    return mouseX >= rect.x && mouseX <= rect.x + rect.width && 
+           mouseY >= rect.y && mouseY <= rect.y + rect.height;
+}
+
+function getCursorStyle(handle) {
+    switch(handle) {
+        case 'nw':
+        case 'se':
+            return 'nw-resize';
+        case 'ne':
+        case 'sw':
+            return 'ne-resize';
+        case 'n':
+        case 's':
+            return 'ns-resize';
+        case 'e':
+        case 'w':
+            return 'ew-resize';
+        default:
+            return 'default';
+    }
+}
+
+function findBoxAtPosition(mouseX, mouseY) {
+    // 计算实际图像坐标
+    const currentDisplayImage = rotatedImage || originalImage;
+    const canvas = document.getElementById('mainCanvas');
+    const scaleX = currentDisplayImage.cols / canvas.width;
+    const scaleY = currentDisplayImage.rows / canvas.height;
+    
+    const imageX = mouseX * scaleX;
+    const imageY = mouseY * scaleY;
+    
+    // 检查模板框
+    if (templateRect) {
+        const templateCanvasRect = {
+            x: templateRect.x / scaleX,
+            y: templateRect.y / scaleY,
+            width: templateRect.width / scaleX,
+            height: templateRect.height / scaleY
+        };
+        
+        if (isInsideRect(mouseX, mouseY, templateCanvasRect)) {
+            return {
+                type: 'template',
+                index: 0,
+                rect: templateCanvasRect,
+                imageRect: templateRect
+            };
+        }
+    }
+    
+    // 检查检测结果框
+    for (let i = 0; i < detectionResults.length; i++) {
+        const result = detectionResults[i];
+        const canvasRect = {
+            x: result.x / scaleX,
+            y: result.y / scaleY,
+            width: result.width / scaleX,
+            height: result.height / scaleY
+        };
+        
+        if (isInsideRect(mouseX, mouseY, canvasRect)) {
+            return {
+                type: 'detection',
+                index: i,
+                rect: canvasRect,
+                imageRect: result
+            };
+        }
+    }
+    
+    // 检查手动标记框
+    for (let i = 0; i < manualMarks.length; i++) {
+        const mark = manualMarks[i];
+        const canvasRect = {
+            x: (mark.x - mark.radius) / scaleX,
+            y: (mark.y - mark.radius) / scaleY,
+            width: (mark.radius * 2) / scaleX,
+            height: (mark.radius * 2) / scaleY
+        };
+        
+        if (isInsideRect(mouseX, mouseY, canvasRect)) {
+            return {
+                type: 'manual',
+                index: i,
+                rect: canvasRect,
+                imageRect: {
+                    x: mark.x - mark.radius,
+                    y: mark.y - mark.radius,
+                    width: mark.radius * 2,
+                    height: mark.radius * 2
+                }
+            };
+        }
+    }
+    
+    // 检查区域选择框
+    for (let i = 0; i < selectedRegions.length; i++) {
+        const region = selectedRegions[i];
+        const canvasRect = {
+            x: region.x / scaleX,
+            y: region.y / scaleY,
+            width: region.width / scaleX,
+            height: region.height / scaleY
+        };
+        
+        if (isInsideRect(mouseX, mouseY, canvasRect)) {
+            return {
+                type: 'region',
+                index: i,
+                rect: canvasRect,
+                imageRect: region
+            };
+        }
+    }
+    
+    return null;
+}
+
+// 检查新框是否与现有框重叠
+function checkOverlapWithExistingBoxes(rectX, rectY, rectWidth, rectHeight) {
+    const newRect = {
+        x: rectX,
+        y: rectY,
+        width: rectWidth,
+        height: rectHeight
+    };
+    
+    // 检查与模板框的重叠
+    if (templateRect && rectsOverlap(newRect, templateRect)) {
+        return true;
+    }
+    
+    // 检查与检测结果框的重叠
+    for (let i = 0; i < detectionResults.length; i++) {
+        if (rectsOverlap(newRect, detectionResults[i])) {
+            return true;
+        }
+    }
+    
+    // 检查与手动标记框的重叠
+    for (let i = 0; i < manualMarks.length; i++) {
+        const mark = manualMarks[i];
+        const markRect = {
+            x: mark.x - mark.radius,
+            y: mark.y - mark.radius,
+            width: mark.radius * 2,
+            height: mark.radius * 2
+        };
+        if (rectsOverlap(newRect, markRect)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// 检查两个矩形是否重叠
+function rectsOverlap(rect1, rect2) {
+    return !(rect1.x + rect1.width <= rect2.x || 
+             rect2.x + rect2.width <= rect1.x || 
+             rect1.y + rect1.height <= rect2.y || 
+             rect2.y + rect2.height <= rect1.y);
+}
 
 function handleDragOver(e) {
     e.preventDefault();
@@ -199,6 +459,7 @@ function loadImage(imageSrc) {
 function setupCanvasEvents(canvas) {
     let isMouseDown = false;
     let startX, startY;
+    let lastClickTime = 0;
     
     canvas.addEventListener('mousedown', function(e) {
         const rect = canvas.getBoundingClientRect();
@@ -206,9 +467,65 @@ function setupCanvasEvents(canvas) {
         const currentX = (e.clientX - rect.left) * (canvas.width / rect.width);
         const currentY = (e.clientY - rect.top) * (canvas.height / rect.height);
         
-        // 定位编辑模式下的点击移除
+        // 定位编辑模式下检查双击
         if (isPositionEditMode) {
-            handlePositionEditClick(currentX, currentY);
+            const currentTime = Date.now();
+            const timeDiff = currentTime - lastClickTime;
+            
+            if (timeDiff < 300) { // 双击间隔小于300ms
+                const boxAtPosition = findBoxAtPosition(currentX, currentY);
+                if (boxAtPosition) {
+                    handlePositionEditDoubleClick(currentX, currentY);
+                    return;
+                }
+            }
+            lastClickTime = currentTime;
+        }
+        
+        // 检查是否点击了现有的框
+        const boxAtPosition = findBoxAtPosition(currentX, currentY);
+        
+        if (boxAtPosition && (isPositionEditMode || boxAtPosition.type === 'template' || boxAtPosition.type === 'region')) {
+            // 检查是否点击了调整手柄
+            const handle = getResizeHandle(currentX, currentY, boxAtPosition.rect);
+            
+            if (handle) {
+                // 开始调整大小
+                isResizing = true;
+                resizeHandle = handle;
+                selectedBox = boxAtPosition;
+                originalBoxRect = {...boxAtPosition.imageRect};
+                dragStartX = currentX;
+                dragStartY = currentY;
+                canvas.style.cursor = getCursorStyle(handle);
+                updateBoxSizeDisplay();
+                return;
+            } else {
+                // 开始拖拽移动
+                isDragging = true;
+                selectedBox = boxAtPosition;
+                originalBoxRect = {...boxAtPosition.imageRect};
+                dragStartX = currentX;
+                dragStartY = currentY;
+                canvas.style.cursor = 'move';
+                updateBoxSizeDisplay();
+                return;
+            }
+        }
+        
+        // 点击空白区域时清除选中状态
+        if (selectedBox) {
+            selectedBox = null;
+            updateBoxSizeDisplay();
+            redrawWithAllBoxes();
+        }
+        
+        // 区域选择模式
+        if (isRegionSelecting) {
+            isMouseDown = true;
+            regionStartX = currentX;
+            regionStartY = currentY;
+            canvas.style.cursor = 'crosshair';
             return;
         }
         
@@ -228,6 +545,7 @@ function setupCanvasEvents(canvas) {
         startX = currentX;
         startY = currentY;
         startPoint = {x: startX, y: startY};
+        canvas.classList.add('crosshair-cursor');
     });
     
     canvas.addEventListener('mousemove', function(e) {
@@ -235,6 +553,37 @@ function setupCanvasEvents(canvas) {
         // 考虑缩放比例计算实际坐标 - 需要相对于canvas原始尺寸
         const currentX = (e.clientX - rect.left) * (canvas.width / rect.width);
         const currentY = (e.clientY - rect.top) * (canvas.height / rect.height);
+        
+        // 处理调整大小
+        if (isResizing && selectedBox) {
+            handleResize(currentX, currentY);
+            return;
+        }
+        
+        // 处理拖拽移动
+        if (isDragging && selectedBox) {
+            handleDrag(currentX, currentY);
+            return;
+        }
+        
+        // 更新鼠标样式和悬停效果
+        if (!isMouseDown && !isManualSelecting && !isResizing && !isDragging) {
+            updateCursorStyle(currentX, currentY, canvas);
+            
+            // 添加悬停效果
+            const hoveredBox = findBoxAtPosition(currentX, currentY);
+            if (hoveredBox && (isPositionEditMode || hoveredBox.type === 'template' || hoveredBox.type === 'region')) {
+                redrawWithAllBoxes(hoveredBox);
+            } else {
+                redrawWithAllBoxes();
+            }
+        }
+        
+        // 区域选择模式下的画框选择（实时显示画框）
+        if (isRegionSelecting && isMouseDown) {
+            redrawCanvasWithSelection(canvas, regionStartX, regionStartY, currentX, currentY);
+            return;
+        }
         
         // 手动编辑模式下的画框选择
         if (isManualSelecting && isEditMode) {
@@ -254,6 +603,78 @@ function setupCanvasEvents(canvas) {
         const endX = (e.clientX - rect.left) * (canvas.width / rect.width);
         const endY = (e.clientY - rect.top) * (canvas.height / rect.height);
         
+        // 结束调整大小
+        if (isResizing) {
+            isResizing = false;
+            resizeHandle = null;
+            canvas.style.cursor = 'default';
+            showStatus('框大小调整完成', 'success');
+            return;
+        }
+        
+        // 结束拖拽移动
+        if (isDragging) {
+            isDragging = false;
+            canvas.style.cursor = 'default';
+            showStatus('框位置移动完成', 'success');
+            return;
+        }
+        
+        // 区域选择模式下的画框完成
+        if (isRegionSelecting) {
+            isMouseDown = false;
+            isRegionSelecting = false;
+            
+            const width = Math.abs(endX - regionStartX);
+            const height = Math.abs(endY - regionStartY);
+            
+            if (width < 10 || height < 10) {
+                showStatus('选择区域太小，请重新选择！', 'error');
+                redrawOriginalCanvas(canvas);
+                return;
+            }
+            
+            // 计算实际图像坐标
+            const currentDisplayImage = rotatedImage || originalImage;
+            const scaleX = currentDisplayImage.cols / canvas.width;
+            const scaleY = currentDisplayImage.rows / canvas.height;
+            
+            const rectX = Math.min(regionStartX, endX) * scaleX;
+            const rectY = Math.min(regionStartY, endY) * scaleY;
+            const rectWidth = width * scaleX;
+            const rectHeight = height * scaleY;
+            
+            // 添加新的区域到数组中
+            const newRegion = {
+                x: rectX,
+                y: rectY,
+                width: rectWidth,
+                height: rectHeight
+            };
+            selectedRegions.push(newRegion);
+            
+            // 保持十字光标，允许继续选择区域
+            canvas.style.cursor = 'crosshair';
+            
+            showStatus(`区域选择完成！已选择 ${selectedRegions.length} 个区域，可以继续选择其他区域，或点击"确认区域检测"按钮开始检测`, 'info');
+            
+            // 将最新的区域选择框设置为可选中状态，允许用户调整
+            selectedBox = {
+                type: 'region',
+                index: selectedRegions.length - 1,
+                rect: newRegion
+            };
+            
+            // 重绘显示选中的区域
+            redrawWithAllBoxes(selectedBox);
+            
+            // 更新按钮状态为确认区域检测，并启用按钮
+            const btn = document.getElementById('autoDetectionBtn');
+            btn.innerHTML = '🎯 确认区域检测';
+            btn.disabled = false;
+            return;
+        }
+        
         // 手动编辑模式下的画框完成
         if (isManualSelecting && isEditMode) {
             isManualSelecting = false;
@@ -272,9 +693,21 @@ function setupCanvasEvents(canvas) {
             const scaleX = currentDisplayImage.cols / canvas.width;
             const scaleY = currentDisplayImage.rows / canvas.height;
             
-            const centerX = (Math.min(manualStartX, endX) + width / 2) * scaleX;
-            const centerY = (Math.min(manualStartY, endY) + height / 2) * scaleY;
-            const radius = Math.min(width, height) / 2 * Math.min(scaleX, scaleY);
+            const rectX = Math.min(manualStartX, endX) * scaleX;
+            const rectY = Math.min(manualStartY, endY) * scaleY;
+            const rectWidth = width * scaleX;
+            const rectHeight = height * scaleY;
+            
+            // 检查是否与现有框重叠
+            if (checkOverlapWithExistingBoxes(rectX, rectY, rectWidth, rectHeight)) {
+                showStatus('不能在已有定位框位置画框！', 'error');
+                redrawWithMarks();
+                return;
+            }
+            
+            const centerX = rectX + rectWidth / 2;
+            const centerY = rectY + rectHeight / 2;
+            const radius = Math.min(rectWidth, rectHeight) / 2;
             
             // 检查是否点击了现有标记进行删除
             if (!removeManualMark(centerX, centerY)) {
@@ -336,10 +769,11 @@ function setupCanvasEvents(canvas) {
             // 在canvas上绘制确认的选择框
             redrawCanvasWithConfirmedSelection(canvas, Math.min(startX, endX), Math.min(startY, endY), width, height);
             
-            document.getElementById('previewDetectionBtn').disabled = false;
+            document.getElementById('autoDetectionBtn').disabled = false;
             document.getElementById('editModeBtn').disabled = false;
             document.getElementById('repairBtn').disabled = false;
             document.getElementById('clearSelectionBtn').disabled = false;
+            canvas.classList.remove('crosshair-cursor');
             showStatus(`模板已选定！区域大小: ${Math.round(w)}×${Math.round(h)}`, 'success');
             
         } catch (error) {
@@ -347,6 +781,644 @@ function setupCanvasEvents(canvas) {
             showStatus('模板提取失败：' + error.message, 'error');
         }
     });
+    
+    // 添加键盘事件监听器
+    document.addEventListener('keydown', handleKeyboardInput);
+}
+
+// 新增：处理键盘输入
+function handleKeyboardInput(e) {
+    // 只在有选中框时处理方向键
+    if (!selectedBox) return;
+    
+    // 检查是否是方向键
+    const moveStep = 1; // 每次移动的像素数
+    let deltaX = 0, deltaY = 0;
+    
+    switch(e.key) {
+        case 'ArrowUp':
+            deltaY = -moveStep;
+            break;
+        case 'ArrowDown':
+            deltaY = moveStep;
+            break;
+        case 'ArrowLeft':
+            deltaX = -moveStep;
+            break;
+        case 'ArrowRight':
+            deltaX = moveStep;
+            break;
+        case 'Escape':
+            // ESC键取消选中
+            selectedBox = null;
+            updateBoxSizeDisplay();
+            redrawWithAllBoxes();
+            return;
+        default:
+            return; // 不是我们关心的按键
+    }
+    
+    // 阻止默认行为（如页面滚动）
+    e.preventDefault();
+    
+    // 计算新位置
+    const canvas = document.getElementById('mainCanvas');
+    const currentDisplayImage = rotatedImage || originalImage;
+    const scaleX = currentDisplayImage.cols / canvas.width;
+    const scaleY = currentDisplayImage.rows / canvas.height;
+    
+    // 转换为图像坐标系的移动量
+    const imageDeltaX = deltaX * scaleX;
+    const imageDeltaY = deltaY * scaleY;
+    
+    let newRect = {...selectedBox.imageRect};
+    newRect.x += imageDeltaX;
+    newRect.y += imageDeltaY;
+    
+    // 边界检查
+    if (newRect.x < 0) newRect.x = 0;
+    if (newRect.y < 0) newRect.y = 0;
+    if (newRect.x + newRect.width > currentDisplayImage.cols) {
+        newRect.x = currentDisplayImage.cols - newRect.width;
+    }
+    if (newRect.y + newRect.height > currentDisplayImage.rows) {
+        newRect.y = currentDisplayImage.rows - newRect.height;
+    }
+    
+    // 更新框数据
+    updateBoxData(selectedBox, newRect);
+    
+    // 重绘
+    redrawWithAllBoxes();
+}
+
+// 新增：应用选框尺寸设置
+function applyBoxSize(target) {
+    const widthInput = document.getElementById('boxWidth');
+    const heightInput = document.getElementById('boxHeight');
+    
+    const width = parseInt(widthInput.value);
+    const height = parseInt(heightInput.value);
+    
+    if (!width || !height || width < 10 || height < 10) {
+        showStatus('请输入有效的宽度和高度值（最小10像素）', 'error');
+        return;
+    }
+    
+    const canvas = document.getElementById('mainCanvas');
+    const currentDisplayImage = rotatedImage || originalImage;
+    const scaleX = currentDisplayImage.cols / canvas.width;
+    const scaleY = currentDisplayImage.rows / canvas.height;
+    
+    // 转换为图像坐标系的尺寸
+    const imageWidth = width * scaleX;
+    const imageHeight = height * scaleY;
+    
+    if (target === 'selected') {
+        // 应用到选中的框
+        if (!selectedBox) {
+            showStatus('请先选中一个框', 'error');
+            return;
+        }
+        
+        let newRect = {...selectedBox.imageRect};
+        // 保持中心点不变，调整尺寸
+        const centerX = newRect.x + newRect.width / 2;
+        const centerY = newRect.y + newRect.height / 2;
+        
+        newRect.x = centerX - imageWidth / 2;
+        newRect.y = centerY - imageHeight / 2;
+        newRect.width = imageWidth;
+        newRect.height = imageHeight;
+        
+        // 边界检查
+        if (newRect.x < 0) newRect.x = 0;
+        if (newRect.y < 0) newRect.y = 0;
+        if (newRect.x + newRect.width > currentDisplayImage.cols) {
+            newRect.x = currentDisplayImage.cols - newRect.width;
+        }
+        if (newRect.y + newRect.height > currentDisplayImage.rows) {
+            newRect.y = currentDisplayImage.rows - newRect.height;
+        }
+        
+        updateBoxData(selectedBox, newRect);
+        showStatus(`已调整选中框尺寸为 ${width}×${height}`, 'success');
+        
+    } else if (target === 'all') {
+        // 应用到所有框
+        let count = 0;
+        
+        // 调整模板框
+        if (templateRect) {
+            const centerX = templateRect.x + templateRect.width / 2;
+            const centerY = templateRect.y + templateRect.height / 2;
+            
+            templateRect.x = Math.max(0, centerX - imageWidth / 2);
+            templateRect.y = Math.max(0, centerY - imageHeight / 2);
+            templateRect.width = imageWidth;
+            templateRect.height = imageHeight;
+            
+            // 边界检查
+            if (templateRect.x + templateRect.width > currentDisplayImage.cols) {
+                templateRect.x = currentDisplayImage.cols - templateRect.width;
+            }
+            if (templateRect.y + templateRect.height > currentDisplayImage.rows) {
+                templateRect.y = currentDisplayImage.rows - templateRect.height;
+            }
+            
+            // 重新提取模板
+            if (template) template.delete();
+            let currentGrayImage;
+            if (rotatedImage) {
+                currentGrayImage = new cv.Mat();
+                cv.cvtColor(rotatedImage, currentGrayImage, cv.COLOR_RGBA2GRAY);
+            } else {
+                currentGrayImage = grayImage;
+            }
+            template = currentGrayImage.roi(templateRect);
+            count++;
+        }
+        
+        // 调整检测结果框
+        detectionResults.forEach(result => {
+            const centerX = result.x + result.width / 2;
+            const centerY = result.y + result.height / 2;
+            
+            result.x = Math.max(0, centerX - imageWidth / 2);
+            result.y = Math.max(0, centerY - imageHeight / 2);
+            result.width = imageWidth;
+            result.height = imageHeight;
+            
+            // 边界检查
+            if (result.x + result.width > currentDisplayImage.cols) {
+                result.x = currentDisplayImage.cols - result.width;
+            }
+            if (result.y + result.height > currentDisplayImage.rows) {
+                result.y = currentDisplayImage.rows - result.height;
+            }
+            count++;
+        });
+        
+        // 调整手动标记框
+        manualMarks.forEach(mark => {
+            const radius = Math.min(imageWidth, imageHeight) / 2;
+            mark.radius = radius;
+            
+            // 边界检查
+            if (mark.x - radius < 0) mark.x = radius;
+            if (mark.y - radius < 0) mark.y = radius;
+            if (mark.x + radius > currentDisplayImage.cols) {
+                mark.x = currentDisplayImage.cols - radius;
+            }
+            if (mark.y + radius > currentDisplayImage.rows) {
+                mark.y = currentDisplayImage.rows - radius;
+            }
+            count++;
+        });
+        
+        showStatus(`已调整 ${count} 个框的尺寸为 ${width}×${height}`, 'success');
+    }
+    
+    // 重绘
+    redrawWithAllBoxes();
+    
+    // 清空输入框
+    widthInput.value = '';
+    heightInput.value = '';
+}
+
+// 新增：更新选中框时显示当前尺寸
+function updateBoxSizeDisplay() {
+    const widthInput = document.getElementById('boxWidth');
+    const heightInput = document.getElementById('boxHeight');
+    
+    if (selectedBox) {
+        const canvas = document.getElementById('mainCanvas');
+        const currentDisplayImage = rotatedImage || originalImage;
+        const scaleX = currentDisplayImage.cols / canvas.width;
+        const scaleY = currentDisplayImage.rows / canvas.height;
+        
+        // 转换为canvas坐标系的尺寸
+        const canvasWidth = Math.round(selectedBox.imageRect.width / scaleX);
+        const canvasHeight = Math.round(selectedBox.imageRect.height / scaleY);
+        
+        // 将实际值填入输入框
+        widthInput.value = canvasWidth;
+        heightInput.value = canvasHeight;
+        widthInput.placeholder = '宽度';
+        heightInput.placeholder = '高度';
+    } else {
+        // 清空输入框值
+        widthInput.value = '';
+        heightInput.value = '';
+        widthInput.placeholder = '宽度';
+        heightInput.placeholder = '高度';
+    }
+}
+
+// 新增：处理调整大小
+function handleResize(currentX, currentY) {
+    if (!selectedBox || !originalBoxRect) return;
+    
+    const canvas = document.getElementById('mainCanvas');
+    const currentDisplayImage = rotatedImage || originalImage;
+    const scaleX = currentDisplayImage.cols / canvas.width;
+    const scaleY = currentDisplayImage.rows / canvas.height;
+    
+    const deltaX = (currentX - dragStartX) * scaleX;
+    const deltaY = (currentY - dragStartY) * scaleY;
+    
+    let newRect = {...originalBoxRect};
+    
+    // 根据调整手柄类型计算新的矩形
+    switch(resizeHandle) {
+        case 'nw':
+            newRect.x += deltaX;
+            newRect.y += deltaY;
+            newRect.width -= deltaX;
+            newRect.height -= deltaY;
+            break;
+        case 'ne':
+            newRect.y += deltaY;
+            newRect.width += deltaX;
+            newRect.height -= deltaY;
+            break;
+        case 'sw':
+            newRect.x += deltaX;
+            newRect.width -= deltaX;
+            newRect.height += deltaY;
+            break;
+        case 'se':
+            newRect.width += deltaX;
+            newRect.height += deltaY;
+            break;
+        case 'n':
+            newRect.y += deltaY;
+            newRect.height -= deltaY;
+            break;
+        case 's':
+            newRect.height += deltaY;
+            break;
+        case 'w':
+            newRect.x += deltaX;
+            newRect.width -= deltaX;
+            break;
+        case 'e':
+            newRect.width += deltaX;
+            break;
+    }
+    
+    // 确保最小尺寸
+    const minSize = 20;
+    if (newRect.width < minSize) {
+        if (resizeHandle.includes('w')) {
+            newRect.x = originalBoxRect.x + originalBoxRect.width - minSize;
+        }
+        newRect.width = minSize;
+    }
+    if (newRect.height < minSize) {
+        if (resizeHandle.includes('n')) {
+            newRect.y = originalBoxRect.y + originalBoxRect.height - minSize;
+        }
+        newRect.height = minSize;
+    }
+    
+    // 更新对应的数据结构
+    updateBoxData(selectedBox, newRect);
+    
+    // 重绘
+    redrawWithAllBoxes();
+}
+
+// 新增：处理拖拽移动
+function handleDrag(currentX, currentY) {
+    if (!selectedBox || !originalBoxRect) return;
+    
+    const canvas = document.getElementById('mainCanvas');
+    const currentDisplayImage = rotatedImage || originalImage;
+    const scaleX = currentDisplayImage.cols / canvas.width;
+    const scaleY = currentDisplayImage.rows / canvas.height;
+    
+    const deltaX = (currentX - dragStartX) * scaleX;
+    const deltaY = (currentY - dragStartY) * scaleY;
+    
+    let newRect = {
+        x: originalBoxRect.x + deltaX,
+        y: originalBoxRect.y + deltaY,
+        width: originalBoxRect.width,
+        height: originalBoxRect.height
+    };
+    
+    // 边界检查
+    if (newRect.x < 0) newRect.x = 0;
+    if (newRect.y < 0) newRect.y = 0;
+    if (newRect.x + newRect.width > currentDisplayImage.cols) {
+        newRect.x = currentDisplayImage.cols - newRect.width;
+    }
+    if (newRect.y + newRect.height > currentDisplayImage.rows) {
+        newRect.y = currentDisplayImage.rows - newRect.height;
+    }
+    
+    // 更新对应的数据结构
+    updateBoxData(selectedBox, newRect);
+    
+    // 重绘
+    redrawWithAllBoxes();
+}
+
+// 新增：更新框数据
+function updateBoxData(box, newRect) {
+    switch(box.type) {
+        case 'template':
+            templateRect.x = newRect.x;
+            templateRect.y = newRect.y;
+            templateRect.width = newRect.width;
+            templateRect.height = newRect.height;
+            
+            // 重新提取模板
+            if (template) template.delete();
+            const currentDisplayImage = rotatedImage || originalImage;
+            let currentGrayImage;
+            if (rotatedImage) {
+                currentGrayImage = new cv.Mat();
+                cv.cvtColor(rotatedImage, currentGrayImage, cv.COLOR_RGBA2GRAY);
+            } else {
+                currentGrayImage = grayImage;
+            }
+            template = currentGrayImage.roi(templateRect);
+            break;
+            
+        case 'detection':
+            detectionResults[box.index].x = newRect.x;
+            detectionResults[box.index].y = newRect.y;
+            detectionResults[box.index].width = newRect.width;
+            detectionResults[box.index].height = newRect.height;
+            break;
+            
+        case 'manual':
+            const centerX = newRect.x + newRect.width / 2;
+            const centerY = newRect.y + newRect.height / 2;
+            const radius = Math.min(newRect.width, newRect.height) / 2;
+            manualMarks[box.index].x = centerX;
+            manualMarks[box.index].y = centerY;
+            manualMarks[box.index].radius = radius;
+            break;
+            
+        case 'region':
+            selectedRegions[box.index].x = newRect.x;
+            selectedRegions[box.index].y = newRect.y;
+            selectedRegions[box.index].width = newRect.width;
+            selectedRegions[box.index].height = newRect.height;
+            break;
+    }
+    
+    // 更新selectedBox中的rect信息
+    const canvas = document.getElementById('mainCanvas');
+    const currentDisplayImage2 = rotatedImage || originalImage;
+    const scaleX = currentDisplayImage2.cols / canvas.width;
+    const scaleY = currentDisplayImage2.rows / canvas.height;
+    
+    box.rect = {
+        x: newRect.x / scaleX,
+        y: newRect.y / scaleY,
+        width: newRect.width / scaleX,
+        height: newRect.height / scaleY
+    };
+    box.imageRect = newRect;
+}
+
+// 新增：更新鼠标样式
+function updateCursorStyle(mouseX, mouseY, canvas) {
+    const boxAtPosition = findBoxAtPosition(mouseX, mouseY);
+    
+    // 只在定位编辑模式或模板框上显示调整样式
+    if (boxAtPosition && (isPositionEditMode || boxAtPosition.type === 'template')) {
+        const handle = getResizeHandle(mouseX, mouseY, boxAtPosition.rect);
+        if (handle) {
+            canvas.style.cursor = getCursorStyle(handle);
+        } else {
+            canvas.style.cursor = 'move';
+        }
+    } else if (isEditMode || template || isRegionSelecting || originalImage) {
+        // 手动选择模式、模板选择模式、区域选择模式或有图片时都显示黑色十字光标
+        canvas.style.cursor = '';
+        canvas.classList.add('crosshair-cursor');
+    } else {
+        canvas.style.cursor = 'default';
+        canvas.classList.remove('crosshair-cursor');
+    }
+}
+
+// 新增：重绘所有框
+function redrawWithAllBoxes(hoveredBox = null) {
+    const canvas = document.getElementById('mainCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // 重绘当前显示的图像
+    const currentDisplayImage = rotatedImage || originalImage;
+    cv.imshow(canvas, currentDisplayImage);
+    
+    const scaleX = currentDisplayImage.cols / canvas.width;
+    const scaleY = currentDisplayImage.rows / canvas.height;
+    
+    // 绘制模板框
+    if (templateRect) {
+        const isSelected = selectedBox && selectedBox.type === 'template';
+        const isHovered = hoveredBox && hoveredBox.type === 'template';
+        
+        ctx.strokeStyle = isSelected ? '#ff0000' : (isHovered ? '#ff0000' : '#0066ff');
+        ctx.lineWidth = isSelected ? 3 : (isHovered ? 2.5 : 2);
+        ctx.setLineDash([]);
+        
+        // 添加发光效果
+        if (isSelected || isHovered) {
+            ctx.shadowColor = ctx.strokeStyle;
+            ctx.shadowBlur = isSelected ? 8 : 4;
+        } else {
+            ctx.shadowBlur = 0;
+        }
+        
+        const rect = {
+            x: templateRect.x / scaleX,
+            y: templateRect.y / scaleY,
+            width: templateRect.width / scaleX,
+            height: templateRect.height / scaleY
+        };
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+        
+        // 重置阴影
+        ctx.shadowBlur = 0;
+        
+        // 只在选中时显示调整手柄，悬浮时不显示
+        if (isSelected && (isPositionEditMode || templateRect)) {
+            drawResizeHandles(ctx, rect);
+        }
+    }
+    
+    // 绘制检测结果
+    detectionResults.forEach((result, index) => {
+        const isSelected = selectedBox && selectedBox.type === 'detection' && selectedBox.index === index;
+        const isHovered = hoveredBox && hoveredBox.type === 'detection' && hoveredBox.index === index;
+        
+        if (result.type === 'marked') {
+            ctx.strokeStyle = isSelected ? '#ff0000' : (isHovered ? '#ff0000' : '#0066ff');
+            ctx.lineWidth = isSelected ? 4 : (isHovered ? 3.5 : 3);
+            ctx.setLineDash([]);
+        } else {
+            ctx.strokeStyle = isSelected ? '#ff0000' : (isHovered ? '#ff0000' : '#0066ff');
+            ctx.lineWidth = isSelected ? 3 : (isHovered ? 2.5 : 2);
+            ctx.setLineDash([]);
+        }
+        
+        // 添加发光效果
+        if (isSelected || isHovered) {
+            ctx.shadowColor = ctx.strokeStyle;
+            ctx.shadowBlur = isSelected ? 6 : 3;
+        } else {
+            ctx.shadowBlur = 0;
+        }
+        
+        const rect = {
+            x: result.x / scaleX,
+            y: result.y / scaleY,
+            width: result.width / scaleX,
+            height: result.height / scaleY
+        };
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+        
+        // 重置阴影
+        ctx.shadowBlur = 0;
+        
+        // 只在选中时显示调整手柄，悬浮时不显示
+        if (isSelected && isPositionEditMode) {
+            drawResizeHandles(ctx, rect);
+        }
+    });
+    
+    // 绘制手动标记
+    manualMarks.forEach((mark, index) => {
+        const isSelected = selectedBox && selectedBox.type === 'manual' && selectedBox.index === index;
+        const isHovered = hoveredBox && hoveredBox.type === 'manual' && hoveredBox.index === index;
+        
+        ctx.strokeStyle = isSelected ? '#ff0000' : (isHovered ? '#ff0000' : '#0066ff');
+        ctx.lineWidth = isSelected ? 3 : (isHovered ? 2.5 : 2);
+        ctx.setLineDash([]);
+        
+        // 添加发光效果
+        if (isSelected || isHovered) {
+            ctx.shadowColor = ctx.strokeStyle;
+            ctx.shadowBlur = isSelected ? 6 : 3;
+        } else {
+            ctx.shadowBlur = 0;
+        }
+        
+        const rect = {
+            x: (mark.x - mark.radius) / scaleX,
+            y: (mark.y - mark.radius) / scaleY,
+            width: (mark.radius * 2) / scaleX,
+            height: (mark.radius * 2) / scaleY
+        };
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+        
+        // 重置阴影
+        ctx.shadowBlur = 0;
+        
+        // 只在选中时显示调整手柄，悬浮时不显示
+        if (isSelected && isPositionEditMode) {
+            drawResizeHandles(ctx, rect);
+        }
+    });
+    
+    // 绘制区域选择框
+    for (let i = 0; i < selectedRegions.length; i++) {
+        const region = selectedRegions[i];
+        const isSelected = selectedBox && selectedBox.type === 'region' && selectedBox.index === i;
+        const isHovered = hoveredBox && hoveredBox.type === 'region' && hoveredBox.index === i;
+        
+        ctx.strokeStyle = isSelected ? '#ff0000' : (isHovered ? '#ff0000' : '#00ff00');
+        ctx.lineWidth = isSelected ? 3 : (isHovered ? 2.5 : 2);
+        ctx.setLineDash([5, 5]); // 虚线样式
+        
+        // 添加发光效果
+        if (isSelected || isHovered) {
+            ctx.shadowColor = ctx.strokeStyle;
+            ctx.shadowBlur = isSelected ? 6 : 3;
+        } else {
+            ctx.shadowBlur = 0;
+        }
+        
+        const rect = {
+            x: region.x / scaleX,
+            y: region.y / scaleY,
+            width: region.width / scaleX,
+            height: region.height / scaleY
+        };
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+        
+        // 重置阴影和虚线
+        ctx.shadowBlur = 0;
+        ctx.setLineDash([]);
+        
+        // 只在选中时显示调整手柄
+        if (isSelected) {
+            drawResizeHandles(ctx, rect);
+        }
+    }
+}
+
+// 新增：绘制调整手柄
+function drawResizeHandles(ctx, rect) {
+    const handleSize = 8;
+    const x = rect.x;
+    const y = rect.y;
+    const w = rect.width;
+    const h = rect.height;
+    
+    // 保存当前绘图状态
+    ctx.save();
+    
+    // 设置阴影效果
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+    ctx.shadowBlur = 2;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+    
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#2196F3';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    
+    // 角落手柄和边缘手柄
+    const handles = [
+        {x: x - handleSize/2, y: y - handleSize/2, type: 'corner'}, // nw
+        {x: x + w - handleSize/2, y: y - handleSize/2, type: 'corner'}, // ne
+        {x: x - handleSize/2, y: y + h - handleSize/2, type: 'corner'}, // sw
+        {x: x + w - handleSize/2, y: y + h - handleSize/2, type: 'corner'}, // se
+        {x: x + w/2 - handleSize/2, y: y - handleSize/2, type: 'edge'}, // n
+        {x: x + w/2 - handleSize/2, y: y + h - handleSize/2, type: 'edge'}, // s
+        {x: x - handleSize/2, y: y + h/2 - handleSize/2, type: 'edge'}, // w
+        {x: x + w - handleSize/2, y: y + h/2 - handleSize/2, type: 'edge'} // e
+    ];
+    
+    handles.forEach(handle => {
+        // 绘制圆角矩形手柄
+        const radius = handle.type === 'corner' ? 2 : 1;
+        
+        // 绘制圆角矩形（兼容性处理）
+        if (ctx.roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(handle.x, handle.y, handleSize, handleSize, radius);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            // 降级为普通矩形
+            ctx.fillRect(handle.x, handle.y, handleSize, handleSize);
+            ctx.strokeRect(handle.x, handle.y, handleSize, handleSize);
+        }
+    });
+    
+    // 恢复绘图状态
+    ctx.restore();
 }
 
 function redrawCanvasWithSelection(canvas, startX, startY, currentX, currentY) {
@@ -364,21 +1436,12 @@ function redrawCanvasWithSelection(canvas, startX, startY, currentX, currentY) {
 }
 
 function redrawCanvasWithConfirmedSelection(canvas, x, y, width, height) {
-    const ctx = canvas.getContext('2d');
-    
-    // 重绘当前显示的图像（旋转后的图像或原图）
-    const currentDisplayImage = rotatedImage || originalImage;
-    cv.imshow(canvas, currentDisplayImage);
-    
-    // 绘制确认的选择框 - 红色实线框
-    ctx.strokeStyle = '#ff0000';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x, y, width, height);
+    // 使用新的统一绘制函数
+    redrawWithAllBoxes();
 }
 
 function redrawOriginalCanvas(canvas) {
-    const currentDisplayImage = rotatedImage || originalImage;
-    cv.imshow(canvas, currentDisplayImage);
+    redrawWithAllBoxes();
 }
 
 function startRepair() {
@@ -603,23 +1666,31 @@ function performRepair(threshold, darkRatioThreshold) {
 
 function isMarked(region, darkRatioThreshold) {
     try {
-        // 统计深色像素比例
-        const darkThresh = 180;
+        // 多层次检测算法
         const total = region.rows * region.cols;
-        let darkCount = 0;
-        
         const data = region.data;
+        
+        // 1. 统计不同灰度级别的像素
+        let veryDarkCount = 0;  // 很深色 (0-100)
+        let darkCount = 0;      // 深色 (0-150)
+        let mediumCount = 0;    // 中等 (150-200)
+        let lightCount = 0;     // 浅色 (200-255)
+        
         for (let i = 0; i < data.length; i++) {
-            if (data[i] < darkThresh) {
-                darkCount++;
-            }
+            const pixel = data[i];
+            if (pixel < 100) veryDarkCount++;
+            else if (pixel < 150) darkCount++;
+            else if (pixel < 200) mediumCount++;
+            else lightCount++;
         }
         
-        const darkRatio = darkCount / total;
+        const veryDarkRatio = veryDarkCount / total;
+        const darkRatio = (veryDarkCount + darkCount) / total;
+        const lightRatio = lightCount / total;
         
-        // 边缘检测
+        // 2. 边缘检测 - 检测填写痕迹
         const edges = new cv.Mat();
-        cv.Canny(region, edges, 50, 150);
+        cv.Canny(region, edges, 30, 100);
         
         let edgeCount = 0;
         const edgeData = edges.data;
@@ -628,11 +1699,42 @@ function isMarked(region, darkRatioThreshold) {
                 edgeCount++;
             }
         }
-        
         edges.delete();
         
-        // 综合判断
-        return darkRatio > darkRatioThreshold || edgeCount > 50;
+        const edgeRatio = edgeCount / total;
+        
+        // 3. 方差检测 - 检测像素值的变化程度
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+            sum += data[i];
+        }
+        const mean = sum / total;
+        
+        let variance = 0;
+        for (let i = 0; i < data.length; i++) {
+            variance += Math.pow(data[i] - mean, 2);
+        }
+        variance = variance / total;
+        const stdDev = Math.sqrt(variance);
+        
+        // 4. 综合判断逻辑
+        // 已填写的特征：
+        // - 有足够比例的深色像素
+        // - 有明显的边缘（填写痕迹）
+        // - 像素值有一定变化（不是纯色背景）
+        
+        const hasSignificantDarkPixels = veryDarkRatio > 0.08 || darkRatio > darkRatioThreshold;
+        const hasWritingEdges = edgeRatio > 0.03; // 边缘比例超过3%
+        const hasVariation = stdDev > 20; // 标准差大于20表示有变化
+        const notTooLight = lightRatio < 0.85; // 不是85%以上都是浅色
+        const hasStrongDarkSignal = veryDarkRatio > 0.25; // 很深色像素超过25%才直接认为已填写
+        
+        // 综合判断：需要满足更严格的条件才认为已填写
+        const isMarked = (hasSignificantDarkPixels && hasWritingEdges && hasVariation) || 
+                        (hasSignificantDarkPixels && hasWritingEdges && notTooLight) ||
+                        hasStrongDarkSignal; // 只有在很深色像素非常多时才直接认为已填写
+        
+        return isMarked;
         
     } catch (error) {
         console.error('标记检测错误:', error);
@@ -799,7 +1901,8 @@ function previewDetection() {
         // 重绘canvas显示检测结果
         redrawWithDetectionResults();
         
-        showStatus(`检测完成！找到 ${candidateCount} 个候选圆圈，${markedCount} 个待修复圆圈`, 'success');
+        // 显示检测结果对话框
+        showDetectionDialog(candidateCount + markedCount);
         
         // 设置预览检测完成标志
         hasPreviewedDetection = true;
@@ -829,19 +1932,53 @@ function clearSelection() {
     isSelecting = false;
     startPoint = null;
     
-    // 重绘canvas，移除选择框
+    // 清除检测结果
+    detectionResults = [];
+    hasPreviewedDetection = false;
+    
+    // 清除手动标记
+    manualMarks = [];
+    
+    // 清除区域选择
+    selectedRegions = [];
+    isRegionSelecting = false;
+    
+    // 清除选中的框
+    selectedBox = null;
+    
+    // 重置编辑模式状态
+    isEditMode = false;
+    isPositionEditMode = false;
+    isManualSelecting = false;
+    
+    // 重绘canvas，移除所有框
     const mainCanvas = document.getElementById('mainCanvas');
     if (mainCanvas && originalImage) {
         redrawOriginalCanvas(mainCanvas);
     }
     
     // 更新按钮状态
-    document.getElementById('previewDetectionBtn').disabled = true;
+    document.getElementById('autoDetectionBtn').disabled = true;
     document.getElementById('editModeBtn').disabled = true;
     document.getElementById('repairBtn').disabled = true;
     document.getElementById('clearSelectionBtn').disabled = true;
     
-    showStatus('已清除选择，请重新选择模板圆圈。', 'info');
+    // 重置编辑模式按钮状态
+    const editModeBtn = document.getElementById('editModeBtn');
+    if (editModeBtn) {
+        editModeBtn.textContent = '编辑模式';
+        editModeBtn.classList.remove('active');
+    }
+    
+    // 重置定位编辑按钮状态
+    const positionEditBtn = document.getElementById('positionEditBtn');
+    if (positionEditBtn) {
+        positionEditBtn.textContent = '定位编辑';
+        positionEditBtn.classList.remove('active');
+        positionEditBtn.disabled = true;
+    }
+    
+    showStatus('已清除所有选择和检测结果，请重新选择模板圆圈。', 'info');
 }
 
 // 切换编辑模式
@@ -859,8 +1996,12 @@ function toggleEditMode() {
         editBtn.textContent = '退出编辑';
         editBtn.style.backgroundColor = '#ff6b6b';
         
+        // 设置十字光标
+        const canvas = document.getElementById('mainCanvas');
+        canvas.style.cursor = 'crosshair';
+        
         // 禁用其他功能按钮
-        document.getElementById('previewDetectionBtn').disabled = true;
+        document.getElementById('autoDetectionBtn').disabled = true;
         document.getElementById('repairBtn').disabled = true;
         document.getElementById('clearSelectionBtn').disabled = true;
         document.getElementById('autoRotateBtn').disabled = true;
@@ -876,9 +2017,13 @@ function toggleEditMode() {
         editBtn.textContent = '手动选择';
         editBtn.style.backgroundColor = '';
         
+        // 恢复默认光标
+        const canvas = document.getElementById('mainCanvas');
+        canvas.style.cursor = 'default';
+        
         // 重新启用其他功能按钮
         if (template) {
-            document.getElementById('previewDetectionBtn').disabled = false;
+            document.getElementById('autoDetectionBtn').disabled = false;
             document.getElementById('repairBtn').disabled = false;
             document.getElementById('clearSelectionBtn').disabled = false;
             document.getElementById('positionEditBtn').disabled = false;
@@ -910,82 +2055,85 @@ function togglePositionEditMode() {
         positionEditBtn.textContent = '退出定位编辑';
         positionEditBtn.style.backgroundColor = '#ff6b6b';
         
-        // 禁用其他功能按钮
-        document.getElementById('previewDetectionBtn').disabled = true;
+        // 禁用其他按钮
+        document.getElementById('autoDetectionBtn').disabled = true;
         document.getElementById('editModeBtn').disabled = true;
         document.getElementById('repairBtn').disabled = true;
         document.getElementById('clearSelectionBtn').disabled = true;
-        document.getElementById('autoRotateBtn').disabled = true;
-        document.getElementById('rotateLeftBtn').disabled = true;
-        document.getElementById('rotateRightBtn').disabled = true;
+        
+        // 清除当前选中状态
+        selectedBox = null;
         
         // 重绘显示检测结果和手动标记
         redrawWithMarks();
         
-        showStatus('定位编辑模式已开启：点击定位框可移除该定位框', 'info');
+        showStatus('定位编辑模式已开启，可拖拽移动和调整检测框大小，双击删除框', 'info');
     } else {
         positionEditBtn.textContent = '定位编辑';
         positionEditBtn.style.backgroundColor = '';
         
-        // 重新启用其他功能按钮
+        // 重新启用其他按钮
         if (template) {
-            document.getElementById('previewDetectionBtn').disabled = false;
-            document.getElementById('editModeBtn').disabled = false;
+            document.getElementById('autoDetectionBtn').disabled = false;
             document.getElementById('repairBtn').disabled = false;
             document.getElementById('clearSelectionBtn').disabled = false;
         }
-        if (originalImage) {
-            document.getElementById('autoRotateBtn').disabled = false;
-            document.getElementById('rotateLeftBtn').disabled = false;
-            document.getElementById('rotateRightBtn').disabled = false;
-        }
+        document.getElementById('editModeBtn').disabled = false;
+        
+        // 清除选中状态
+        selectedBox = null;
+        isResizing = false;
+        isDragging = false;
+        
+        // 重绘
+        redrawWithAllBoxes();
         
         showStatus('定位编辑模式已关闭', 'info');
     }
 }
 
-// 处理定位编辑模式下的点击
-function handlePositionEditClick(canvasX, canvasY) {
-    // 计算实际图像坐标
-    const currentDisplayImage = rotatedImage || originalImage;
-    const scaleX = currentDisplayImage.cols / document.getElementById('mainCanvas').width;
-    const scaleY = currentDisplayImage.rows / document.getElementById('mainCanvas').height;
+// 处理定位编辑模式下的双击删除
+function handlePositionEditDoubleClick(canvasX, canvasY) {
+    const boxAtPosition = findBoxAtPosition(canvasX, canvasY);
     
-    const imageX = canvasX * scaleX;
-    const imageY = canvasY * scaleY;
-    
-    // 检查是否点击了检测结果中的某个圆圈
-    for (let i = detectionResults.length - 1; i >= 0; i--) {
-        const result = detectionResults[i];
-        const centerX = result.x + result.width / 2;
-        const centerY = result.y + result.height / 2;
-        const radius = Math.max(result.width, result.height) / 2;
-        const distance = Math.sqrt(Math.pow(imageX - centerX, 2) + Math.pow(imageY - centerY, 2));
-        
-        if (distance <= radius) {
-            // 移除这个检测结果
-            detectionResults.splice(i, 1);
-            showStatus(`已移除定位框 (${Math.round(centerX)}, ${Math.round(centerY)})`, 'info');
-            redrawWithMarks();
-            return;
+    if (boxAtPosition) {
+        switch(boxAtPosition.type) {
+            case 'template':
+                // 清除模板选择
+                if (template) template.delete();
+                template = null;
+                templateRect = null;
+                selectedBox = null;
+                
+                // 禁用相关按钮
+                document.getElementById('autoDetectionBtn').disabled = true;
+                document.getElementById('editModeBtn').disabled = true;
+                document.getElementById('repairBtn').disabled = true;
+                document.getElementById('clearSelectionBtn').disabled = true;
+                
+                showStatus('已删除模板选择框', 'info');
+                break;
+                
+            case 'detection':
+                const result = detectionResults[boxAtPosition.index];
+                const centerX = result.x + result.width / 2;
+                const centerY = result.y + result.height / 2;
+                detectionResults.splice(boxAtPosition.index, 1);
+                showStatus(`已删除检测框 (${Math.round(centerX)}, ${Math.round(centerY)})`, 'info');
+                break;
+                
+            case 'manual':
+                const mark = manualMarks[boxAtPosition.index];
+                manualMarks.splice(boxAtPosition.index, 1);
+                showStatus(`已删除手动标记 (${Math.round(mark.x)}, ${Math.round(mark.y)})`, 'info');
+                break;
         }
-    }
-    
-    // 检查是否点击了手动标记中的某个圆圈
-    for (let i = manualMarks.length - 1; i >= 0; i--) {
-        const mark = manualMarks[i];
-        const distance = Math.sqrt(Math.pow(imageX - mark.x, 2) + Math.pow(imageY - mark.y, 2));
         
-        if (distance <= mark.radius) {
-            // 移除这个手动标记
-            manualMarks.splice(i, 1);
-            showStatus(`已移除手动标记 (${Math.round(mark.x)}, ${Math.round(mark.y)})`, 'info');
-            redrawWithMarks();
-            return;
-        }
+        selectedBox = null;
+        redrawWithAllBoxes();
+    } else {
+        showStatus('未点击到任何框', 'warning');
     }
-    
-    showStatus('未点击到任何定位框', 'warning');
 }
 
 // 添加手动标记
@@ -1013,39 +2161,7 @@ function removeManualMark(x, y) {
 // 重绘图像并显示所有标记
 function redrawWithDetectionResults() {
     if (!originalImage) return;
-    
-    const canvas = document.getElementById('mainCanvas');
-    const ctx = canvas.getContext('2d');
-    
-    // 重绘当前显示的图像
-    const currentDisplayImage = rotatedImage || originalImage;
-    cv.imshow(canvas, currentDisplayImage);
-    
-    // 绘制检测结果
-    detectionResults.forEach(result => {
-        if (result.type === 'marked') {
-            // 待修复圆圈 - 红色实线框
-            ctx.strokeStyle = '#ff0000';
-            ctx.lineWidth = 3;
-            ctx.setLineDash([]);
-        } else {
-            // 候选圆圈 - 蓝色虚线框
-            ctx.strokeStyle = '#0000ff';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([5, 5]);
-        }
-        ctx.strokeRect(result.x, result.y, result.width, result.height);
-    });
-    
-    // 绘制手动标记（绿色矩形框，与模板选择框样式一致）
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([]);
-    manualMarks.forEach(mark => {
-        const halfWidth = mark.radius;
-        const halfHeight = mark.radius;
-        ctx.strokeRect(mark.x - halfWidth, mark.y - halfHeight, halfWidth * 2, halfHeight * 2);
-    });
+    redrawWithAllBoxes();
 }
 
 function redrawWithMarks() {
@@ -1072,6 +2188,15 @@ function reset() {
     isEditMode = false;
     isManualSelecting = false;
     
+    // 重置新增的可调整框变量
+    selectedBox = null;
+    isResizing = false;
+    isDragging = false;
+    resizeHandle = null;
+    dragStartX = 0;
+    dragStartY = 0;
+    originalBoxRect = null;
+    
     // 重置UI
     document.getElementById('fileInput').value = '';
     document.getElementById('uploadSection').style.display = 'block';
@@ -1079,7 +2204,7 @@ function reset() {
     document.getElementById('rotationControlsInline').style.display = 'none';
     document.getElementById('canvasContainer').style.display = 'none';
     document.getElementById('resultDisplay').style.display = 'none';
-    document.getElementById('previewDetectionBtn').disabled = true;
+    document.getElementById('autoDetectionBtn').disabled = true;
     document.getElementById('editModeBtn').disabled = true;
     document.getElementById('repairBtn').disabled = true;
     const downloadBtn = document.getElementById('modalDownloadBtn');
@@ -1487,6 +2612,266 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Neutralino.js 初始化
+// 开始区域选择
+function startRegionSelection() {
+    if (!originalImage) {
+        showStatus('请先上传图片！', 'error');
+        return;
+    }
+    
+    // 清除之前的区域选择框
+    selectedRegions = [];
+    selectedBox = null;
+    
+    // 清除除模板框外的所有检测结果和手动标记
+    detectionResults = [];
+    manualMarks = [];
+    hasPreviewedDetection = false;
+    
+    isRegionSelecting = true;
+    
+    // 设置十字光标
+    const canvas = document.getElementById('mainCanvas');
+    canvas.style.cursor = 'crosshair';
+    
+    // 更新按钮状态
+    const btn = document.getElementById('autoDetectionBtn');
+    btn.disabled = true;
+    btn.innerHTML = '🎯 选择区域中...';
+    
+    // 重绘画布以清除之前的区域框和检测结果
+    redrawWithAllBoxes();
+    
+    showStatus('请在图像上拖拽选择要查找的区域，选择完成后可调整位置和大小', 'info');
+}
+
+// 在指定区域内进行检测
+function performRegionDetection(region) {
+    // 在函数开头声明变量，确保在所有执行路径中都能访问
+    let regionImage = null;
+    let result = null;
+    
+    if (!originalImage || !template) {
+        showStatus('请先上传图片并选择模板！', 'error');
+        return;
+    }
+    
+    // 将currentDisplayImage定义在try块之前，确保在catch块中也能访问
+    const currentDisplayImage = rotatedImage || originalImage;
+    
+    try {
+        showProgress(0, '正在准备区域检测...');
+        
+        // 检查区域边界并确保参数有效
+        const regionX = Math.max(0, Math.floor(region.x));
+        const regionY = Math.max(0, Math.floor(region.y));
+        const regionWidth = Math.floor(region.width);
+        const regionHeight = Math.floor(region.height);
+        
+        // 确保区域在图像边界内
+        const maxX = Math.min(regionX, currentDisplayImage.cols - 1);
+        const maxY = Math.min(regionY, currentDisplayImage.rows - 1);
+        const maxWidth = Math.min(regionWidth, currentDisplayImage.cols - maxX);
+        const maxHeight = Math.min(regionHeight, currentDisplayImage.rows - maxY);
+        
+        // 验证区域参数
+        if (maxX < 0 || maxY < 0 || maxWidth <= 0 || maxHeight <= 0 || 
+            maxX >= currentDisplayImage.cols || maxY >= currentDisplayImage.rows ||
+            maxX + maxWidth > currentDisplayImage.cols || maxY + maxHeight > currentDisplayImage.rows) {
+            showStatus('选择的区域超出图像边界！', 'error');
+            hideProgress();
+            return;
+        }
+        
+        // 确保区域大小足够进行模板匹配
+        if (maxWidth < template.cols || maxHeight < template.rows) {
+            showStatus('选择的区域太小，无法进行模板匹配！', 'error');
+            hideProgress();
+            return;
+        }
+        
+        // 提取区域图像
+        console.log('准备提取区域:', {maxX, maxY, maxWidth, maxHeight});
+        
+        try {
+            const regionRect = new cv.Rect(maxX, maxY, maxWidth, maxHeight);
+            const tempRegionImage = currentDisplayImage.roi(regionRect);
+            console.log('区域图像提取成功:', {cols: tempRegionImage.cols, rows: tempRegionImage.rows});
+            
+            // 将区域图像转换为灰度图像，与模板保持一致
+            regionImage = new cv.Mat();
+            cv.cvtColor(tempRegionImage, regionImage, cv.COLOR_RGBA2GRAY);
+            console.log('区域图像转换为灰度成功:', {cols: regionImage.cols, rows: regionImage.rows});
+            
+            // 释放临时彩色区域图像
+            tempRegionImage.delete();
+        } catch (roiError) {
+            console.error('ROI提取失败:', roiError);
+            if (regionImage) {
+                regionImage.delete();
+            }
+            regionImage = null;
+            throw new Error(`ROI提取失败: ${roiError.message || roiError}`);
+        }
+        
+        showProgress(20, '正在区域内查找圆圈...');
+        
+        // 在区域内进行模板匹配
+        try {
+            // 验证模板匹配的前置条件
+            if (!regionImage || !template) {
+                throw new Error('区域图像或模板为空');
+            }
+            
+            if (regionImage.cols < template.cols || regionImage.rows < template.rows) {
+                throw new Error(`区域图像尺寸(${regionImage.cols}x${regionImage.rows})小于模板尺寸(${template.cols}x${template.rows})`);
+            }
+            
+            console.log('开始模板匹配:', {
+                regionSize: {cols: regionImage.cols, rows: regionImage.rows},
+                templateSize: {cols: template.cols, rows: template.rows}
+            });
+            
+            result = new cv.Mat();
+            cv.matchTemplate(regionImage, template, result, cv.TM_CCOEFF_NORMED);
+            console.log('模板匹配成功:', {resultCols: result.cols, resultRows: result.rows});
+        } catch (matchError) {
+            console.error('模板匹配失败:', matchError);
+            throw new Error(`模板匹配失败: ${matchError.message || matchError}`);
+        }
+        
+        showProgress(60, '正在分析检测结果...');
+        
+        const threshold = getThresholdValue();
+        const rawLocations = [];
+        
+        // 查找匹配位置
+        for (let y = 0; y < result.rows; y++) {
+            for (let x = 0; x < result.cols; x++) {
+                const value = result.floatPtr(y, x)[0];
+                if (value >= threshold) {
+                    // 转换为全图坐标
+                    const globalX = maxX + x + template.cols / 2;
+                    const globalY = maxY + y + template.rows / 2;
+                    rawLocations.push({
+                        x: globalX,
+                        y: globalY,
+                        confidence: value
+                    });
+                }
+            }
+        }
+        
+        // 应用非极大值抑制去除重复检测
+        const locations = applyNonMaxSuppression(rawLocations, template.cols);
+        
+        showProgress(80, '正在处理检测结果...');
+        
+        // 清理资源（设置为null避免finally块重复删除）
+        regionImage.delete();
+        regionImage = null;
+        result.delete();
+        result = null;
+        
+        // 转换检测结果格式，确保与其他检测结果一致
+        const formattedResults = [];
+        let filledCount = 0;
+        let unfilledCount = 0;
+        
+        for (const loc of locations) {
+            const rect = {
+                x: loc.x - template.cols / 2,
+                y: loc.y - template.rows / 2,
+                width: template.cols,
+                height: template.rows
+            };
+            
+            // 检查是否已填写
+            try {
+                const currentDisplayImage = rotatedImage || originalImage;
+                const grayImage = new cv.Mat();
+                cv.cvtColor(currentDisplayImage, grayImage, cv.COLOR_RGBA2GRAY);
+                
+                const regionMat = grayImage.roi(new cv.Rect(rect.x, rect.y, rect.width, rect.height));
+                const darkRatioThreshold = getDarkRatioValue();
+                
+                if (isMarked(regionMat, darkRatioThreshold)) {
+                    formattedResults.push({...rect, type: 'marked'});
+                    filledCount++;
+                } else {
+                    formattedResults.push({...rect, type: 'candidate'});
+                    unfilledCount++;
+                }
+                
+                regionMat.delete();
+                grayImage.delete();
+            } catch (error) {
+                console.warn('检测单个区域时出错:', error);
+                formattedResults.push({...rect, type: 'candidate'});
+                unfilledCount++;
+            }
+        }
+        
+        // 保存检测结果
+        detectionResults = formattedResults;
+        hasPreviewedDetection = true;
+        
+        // 清除区域选择框和相关状态
+        selectedRegions = [];
+        selectedBox = null;
+        isRegionSelecting = false;
+        
+        showProgress(100, '区域检测完成');
+        hideProgress();
+        
+        // 重置按钮状态
+        const btn = document.getElementById('autoDetectionBtn');
+        btn.disabled = false;
+        btn.innerHTML = '🎯 区域查找';
+        
+        // 启用定位编辑按钮
+        document.getElementById('positionEditBtn').disabled = false;
+        
+        // 显示检测结果
+        if (formattedResults.length > 0) {
+            redrawWithDetectionResults();
+            
+            // 显示检测结果对话框
+            showDetectionDialog(locations.length);
+        } else {
+            showStatus('在选定区域内未找到匹配的圆圈', 'warning');
+        }
+        
+    } catch (error) {
+        console.error('区域检测出错:', error);
+        console.error('错误详情:', {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+            code: error.code,
+            region: region,
+            imageSize: currentDisplayImage ? {cols: currentDisplayImage.cols, rows: currentDisplayImage.rows} : 'null',
+            templateSize: template ? {cols: template.cols, rows: template.rows} : 'null'
+        });
+        
+        showStatus('区域检测失败: ' + (error.message || error.toString()), 'error');
+        hideProgress();
+        
+        // 重置按钮状态
+        const btn = document.getElementById('autoDetectionBtn');
+        btn.disabled = false;
+        updateDetectionMode();
+    } finally {
+        // 清理资源
+        if (regionImage) {
+            regionImage.delete();
+        }
+        if (result) {
+            result.delete();
+        }
+    }
+}
+
 if (typeof Neutralino !== 'undefined') {
     Neutralino.init();
     

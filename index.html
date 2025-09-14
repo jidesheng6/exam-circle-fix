@@ -332,6 +332,110 @@
             transition: transform 0.2s ease;
         }
         
+        /* 自定义黑色十字光标 */
+        #mainCanvas.crosshair-cursor {
+            cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" viewBox="0 0 21 21"><line x1="10.5" y1="0" x2="10.5" y2="21" stroke="black" stroke-width="2"/><line x1="0" y1="10.5" x2="21" y2="10.5" stroke="black" stroke-width="2"/></svg>') 10 10, crosshair;
+        }
+        
+        /* 检测结果对话框样式 */
+        .detection-dialog {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .detection-dialog-content {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            animation: dialogSlideIn 0.3s ease;
+        }
+        
+        @keyframes dialogSlideIn {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        .detection-dialog h3 {
+            color: #4CAF50;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+        
+        .detection-stats {
+            display: flex;
+            justify-content: space-around;
+            margin: 25px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .stat-number.total {
+            color: #2196F3;
+        }
+        
+        .stat-number.filled {
+            color: #FF9800;
+        }
+        
+        .stat-number.empty {
+            color: #4CAF50;
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+        }
+        
+        .detection-dialog-buttons {
+            margin-top: 25px;
+        }
+        
+        .detection-dialog-btn {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 0 10px;
+        }
+        
+        .detection-dialog-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+        }
+        
         /* 缩放控制样式 */
         .zoom-controls {
             text-align: center;
@@ -751,7 +855,14 @@
                 
                 <!-- 操作按钮区域 -->
                 <div class="action-buttons" style="margin: 20px 0; text-align: center;">
-                    <button class="btn" id="previewDetectionBtn" onclick="previewDetection()" disabled>开始查找</button>
+                    <!-- 查找功能区域 -->
+                    <div style="display: inline-block; margin: 0 10px; position: relative;">
+                        <button class="btn" id="autoDetectionBtn" onclick="autoDetection()" disabled>🔍 自动查找</button>
+                        <select id="detectionModeSelect" style="margin-left: 5px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background: white;" onchange="updateDetectionMode()">
+                            <option value="full">全图查找</option>
+                            <option value="region">区域查找</option>
+                        </select>
+                    </div>
                     <button class="btn" id="editModeBtn" onclick="toggleEditMode()" disabled>手动选择</button>
                     <button class="btn" id="positionEditBtn" onclick="togglePositionEditMode()" disabled>定位编辑</button>
                     <button class="btn" id="repairBtn" onclick="startRepair()" disabled>开始修复</button>
@@ -828,6 +939,22 @@
                 </div>
             </div>
             
+            <!-- 检测结果对话框 -->
+            <div id="detectionDialog" class="detection-dialog">
+                <div class="detection-dialog-content">
+                    <h3>🎯 检测完成</h3>
+                    <div class="detection-stats">
+                        <div class="stat-item">
+                            <div class="stat-number total" id="totalCircles">0</div>
+                            <div class="stat-label">找到圆圈数</div>
+                        </div>
+                    </div>
+                    <div class="detection-dialog-buttons">
+                        <button class="detection-dialog-btn" onclick="closeDetectionDialog()">确定</button>
+                    </div>
+                </div>
+            </div>
+            
             <!-- 隐藏原来的重复canvas区域 -->
             <div class="canvas-container" id="canvasContainer" style="display: none;">
                 <div class="canvas-wrapper">
@@ -860,6 +987,27 @@
                     <span class="unit">%</span>
                 </div>
                 <div class="help-text">用于判断圆圈是否被涂改的敏感度参数。数值越小越敏感，会检测到更轻微的涂改；数值越大越宽松，只检测明显的涂改。建议范围: 1%-10%</div>
+            </div>
+            
+            <div class="control-group">
+                <label>📏 选框尺寸设置</label>
+                <div style="margin-bottom: 15px;">
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <div style="flex: 1;">
+                            <label for="boxWidth" style="font-size: 12px; color: #666;">宽度</label>
+                            <input type="number" id="boxWidth" min="10" max="500" step="1" placeholder="宽度" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        </div>
+                        <div style="flex: 1;">
+                            <label for="boxHeight" style="font-size: 12px; color: #666;">高度</label>
+                            <input type="number" id="boxHeight" min="10" max="500" step="1" placeholder="高度" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="applyToSelected" onclick="applyBoxSize('selected')" style="flex: 1; padding: 8px; background: #2196F3; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">应用到选中框</button>
+                        <button id="applyToAll" onclick="applyBoxSize('all')" style="flex: 1; padding: 8px; background: #FF6B6B; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">应用到全部框</button>
+                    </div>
+                </div>
+                <div class="help-text">选中某个框后，可以单独调整其尺寸；或者批量调整所有框的尺寸。输入像素值，然后点击对应按钮应用。</div>
             </div>
 
         </div>
@@ -964,6 +1112,85 @@
             if (statusDiv) {
                 statusDiv.textContent = message;
                 statusDiv.className = 'status ' + (type || 'info');
+            }
+        }
+        
+        // 显示检测结果对话框
+        function showDetectionDialog(totalCount) {
+            document.getElementById('totalCircles').textContent = totalCount;
+            document.getElementById('detectionDialog').style.display = 'flex';
+        }
+        
+        // 关闭检测结果对话框
+        function closeDetectionDialog() {
+            document.getElementById('detectionDialog').style.display = 'none';
+        }
+        
+        // 自动检测功能
+        function autoDetection() {
+            const btn = document.getElementById('autoDetectionBtn');
+            const mode = document.getElementById('detectionModeSelect').value;
+            
+            // 如果按钮显示为确认区域检测，说明用户已经选择了区域
+            if (btn.innerHTML === '🎯 确认区域检测' && selectedRegions.length > 0) {
+                // 执行区域检测 - 对所有选中的区域进行检测
+                for (let i = 0; i < selectedRegions.length; i++) {
+                    performRegionDetection(selectedRegions[i]);
+                }
+                return;
+            }
+            
+            if (mode === 'region') {
+                // 区域查找模式
+                if (btn.innerHTML === '🎯 区域查找') {
+                    // 进入区域选择模式
+                    showStatus('请在图像上拖拽选择要查找的区域，可以选择多个区域', 'info');
+                    startRegionSelection();
+                } else {
+                    // 已经在区域选择模式，执行检测
+                    if (selectedRegions.length > 0) {
+                        for (let i = 0; i < selectedRegions.length; i++) {
+                            performRegionDetection(selectedRegions[i]);
+                        }
+                    } else {
+                        showStatus('请先选择检测区域！', 'error');
+                    }
+                }
+            } else {
+                // 全图查找模式
+                previewDetection();
+            }
+        }
+        
+        // 更新检测模式
+        function updateDetectionMode() {
+            const mode = document.getElementById('detectionModeSelect').value;
+            const btn = document.getElementById('autoDetectionBtn');
+            
+            if (mode === 'region') {
+                btn.innerHTML = '🎯 区域查找';
+                // 切换到区域查找时，清除全图检测结果，但保留手动标记
+                if (detectionResults.length > 0) {
+                    detectionResults = [];
+                    hasPreviewedDetection = false;
+                    redrawWithAllBoxes();
+                    showStatus('已切换到区域查找模式，全图检测结果已清除', 'info');
+                }
+            } else {
+                btn.innerHTML = '🔍 自动查找';
+                // 切换到全图查找时，清除区域选择框和区域检测结果
+                if (selectedRegions.length > 0 || isRegionSelecting) {
+                    selectedRegions = [];
+                    selectedBox = null;
+                    isRegionSelecting = false;
+                    // 如果有区域检测结果，也清除掉
+                    if (hasPreviewedDetection) {
+                        detectionResults = [];
+                        hasPreviewedDetection = false;
+                    }
+                    redrawWithAllBoxes();
+                    showStatus('已切换到全图查找模式，区域选择已清除', 'info');
+                }
             }
         }
     </script>
